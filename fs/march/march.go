@@ -4,6 +4,7 @@ package march
 import (
 	"context"
 	"fmt"
+	"golang.org/x/sync/errgroup"
 	"path"
 	"sort"
 	"strings"
@@ -25,6 +26,7 @@ type March struct {
 	Fdst                   fs.Fs           // source Fs
 	Fsrc                   fs.Fs           // dest Fs
 	Dir                    string          // directory
+	ListFiles              string          // path to files containing files to copy (skip listing)
 	NoTraverse             bool            // don't traverse the destination
 	SrcIncludeAll          bool            // don't include all files in the src
 	DstIncludeAll          bool            // don't include all files in the destination
@@ -51,9 +53,11 @@ type Marcher interface {
 // Note: this will flag filter-aware backends on the source side
 func (m *March) init(ctx context.Context) {
 	ci := fs.GetConfig(ctx)
-	m.srcListDir = m.makeListDir(ctx, m.Fsrc, m.SrcIncludeAll)
-	if !m.NoTraverse {
-		m.dstListDir = m.makeListDir(ctx, m.Fdst, m.DstIncludeAll)
+	if m.ListFiles == "" {
+		m.srcListDir = m.makeListDir(ctx, m.Fsrc, m.SrcIncludeAll)
+		if !m.NoTraverse {
+			m.dstListDir = m.makeListDir(ctx, m.Fdst, m.DstIncludeAll)
+		}
 	}
 	// Now create the matching transform
 	// ..normalise the UTF8 first
@@ -129,6 +133,65 @@ type listDirJob struct {
 
 // Run starts the matching process off
 func (m *March) Run(ctx context.Context) error {
+	if m.ListFiles == "" {
+		return m.walk(ctx)
+	} else {
+		return m.iterate(ctx)
+	}
+}
+func (m *March) iterate(ctx context.Context) error {
+	ci := fs.GetConfig(ctx)
+	m.init(ctx)
+
+	var files = make(chan string)
+	var checkers = ci.Checkers
+	var mu sync.Mutex // Protects vars below
+	var jobError error
+	var errCount int
+	var g errgroup.Group
+
+	for i := 0; i < checkers; i++ {
+		g.Go(func() (err error) {
+			for remote := range files {
+				obj, err := m.Fsrc.NewObject(ctx, remote)
+				if err != nil {
+					mu.Lock()
+					// Keep reference only to the first encountered error
+					if jobError == nil {
+						jobError = err
+					}
+					errCount++
+					mu.Unlock()
+				}
+
+				if obj != nil {
+					m.Callback.SrcOnly(obj)
+				}
+			}
+			return nil
+		})
+	}
+
+	err := fs.ForEachLine(m.ListFiles, true, func(remote string) error {
+		files <- remote
+		return nil
+	})
+	close(files)
+	if err != nil {
+		return nil
+	}
+
+	err = g.Wait()
+	if err != nil {
+		return err
+	}
+	if errCount > 1 {
+		return fmt.Errorf("march failed with %d error(s): first error: %w", errCount, jobError)
+	}
+	return jobError
+}
+
+func (m *March) walk(ctx context.Context) error {
 	ci := fs.GetConfig(ctx)
 	fi := filter.GetConfig(ctx)
 	m.init(ctx)

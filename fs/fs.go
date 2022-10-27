@@ -2,10 +2,13 @@
 package fs
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
 	"math"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -88,4 +91,32 @@ func GetModifyWindow(ctx context.Context, fss ...Info) time.Duration {
 		}
 	}
 	return window
+}
+
+func ForEachLine(path string, raw bool, fn func(string) error) (err error) {
+	var scanner *bufio.Scanner
+	if path == "-" {
+		scanner = bufio.NewScanner(os.Stdin)
+	} else {
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		scanner = bufio.NewScanner(in)
+		defer CheckClose(in, &err)
+	}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !raw {
+			line = strings.TrimSpace(line)
+			if len(line) == 0 || line[0] == '#' || line[0] == ';' {
+				continue
+			}
+		}
+		err := fn(line)
+		if err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
 }
