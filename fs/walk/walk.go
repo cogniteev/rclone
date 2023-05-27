@@ -154,8 +154,7 @@ func ListR(ctx context.Context, f fs.Fs, path string, includeAll bool, maxLevel 
 	if doListR == nil || // ...no ListR
 		fi.HaveFilesFrom() || // ...using --files-from
 		maxLevel >= 0 || // ...using bounded recursion
-		len(fi.Opt.ExcludeFile) > 0 || // ...using --exclude-file
-		fi.UsesDirectoryFilters() { // ...using any directory filters
+		len(fi.Opt.ExcludeFile) > 0 { // ...using --exclude-file
 		return listRwalk(ctx, f, path, includeAll, maxLevel, listType, fn)
 	}
 	ctx = filter.SetUseFilter(ctx, f.Features().FilterAware && !includeAll) // make filter-aware backends constrain List
